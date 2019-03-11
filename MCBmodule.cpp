@@ -25,9 +25,6 @@ MCBmodule::MCBmodule(uint8_t csEnc)
 
 bool MCBmodule::init(float kp, float ki, float kd)
 {
-    // set up PID controller
-    pid_.init(kp, ki, kd); 
-
     // set up encoder IC (LS7366R)
     int maxAttempts = 5;
     int attempts = 0;
@@ -42,9 +39,6 @@ bool MCBmodule::init(float kp, float ki, float kd)
 
 bool MCBmodule::init(void)
 {
-    // set up PID controller
-    pid_.init();
-
     // set up encoder IC (LS7366R)
     int maxAttempts = 5;
     int attempts = 0;
@@ -56,33 +50,6 @@ bool MCBmodule::init(void)
         }
     }
     return configured_;
-}
-
-uint16_t MCBmodule::step(void)
-{
-    uint16_t dacCmd; // DAC command
-
-    int8_t polarity = 1;
-    if (!motorPolarity_) {
-        polarity = -1;
-    }
-
-	if (isConfigured()){
-		// read current motor position and compute error
-		countError_ = countDesired_ - readCount();
-
-		// step PID controller to compute effort in Amps
-		effort_ = polarity * pid_.step(float(countError_));
-
-		// enforce voltage output bounds (typically -10V to +10V) and convert to int16 for DAC
-		dacCmd = effortToDacCommand(effort_);
-
-	}
-    else {
-        dacCmd = effortToDacCommand(0.0); // shouldn't be called, but here for safety
-    }
-
-	return dacCmd;
 }
 
 uint16_t MCBmodule::effortToDacCommand(float effort)
@@ -100,38 +67,6 @@ uint16_t MCBmodule::effortToDacCommand(float effort)
     // encode effort to 16-bit DAC code
     // DAC code = (2^16)*(effort - Vmin)/(Vmax - Vmin)
     return static_cast<uint16_t>( 65535.0f * (effortTemp - dacRange_[0]) / (dacRange_[1] - dacRange_[0]) );
-}
-
-int32_t MCBmodule::readCount(void)
-{
-	// read LS7366R
-	countLast_ = enc_.getCount();
-
-	return countLast_;
-}
-
-bool MCBmodule::resetCount(void)
-{
-    bool success = false;
-    uint8_t maxAttempts = 5; // number of reset attempts before giving up
-
-    for (uint8_t attempt = 0; attempt < maxAttempts; attempt++) {
-        // reset count register to zero
-        enc_.resetCount();
-
-        // call readCount() to make sure we update countLast_
-        if (!readCount()) { // should be zero
-            success = true;
-            
-            // prevent suddent movement upon re-enabling motor
-            restartPid();
-            setCountDesired(0);
-
-            break;
-        }
-    }
-    
-    return success;
 }
 
 MCBmodule::~MCBmodule(void)

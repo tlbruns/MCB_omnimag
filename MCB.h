@@ -58,9 +58,6 @@ public:
 
     void waitForButtonHold(void); // pauses program until Menu/Up/Down are all held for 2 seconds
     
-    void setPolarity(uint8_t position, bool polarity); // used to make sure positive current -> positive encoder counts
-    void setPolarity(bool polarity); // sets all modules
-    
     bool setGlobalInhibit(bool inhibit, bool eStopCheck = true); // global inhibit control for all amps; TRUE = INHIBIT (i.e. no power to motors)
     bool isAmpEnabled(uint8_t position); // true if amp output is enabled
     bool enableAmp(uint8_t position);  // sets inhibit pin for motor amp
@@ -76,28 +73,10 @@ public:
     std::vector<LimitSwitch> triggeredLimitSwitches(void) { return triggeredLimitSwitches_; }
     bool limitSwitchState(uint8_t position) { return limitSwitchState_[position]; }
     bool eStopState(void) { return eStopState_; }
-    //bool triggeredLimitSwitchFlag(void) { return triggeredLimitSwitchFlag_; }
     void resetTriggeredLimitSwitches(void) { triggeredLimitSwitches_.clear(); }
 
     void setAmpEnableFlag(void) { ampEnableFlag_ = true; } // ONLY to be used by ampEnableISR() to set ampEnableFlag_ true; flag is only disabled by calling updateAmpStates()
     bool ampEnableFlag(void) { return ampEnableFlag_; }
-
-    void setGains(uint8_t position, float kp, float ki, float kd) { modules_.at(position).setGains(kp, ki, kd); } // sets PID gains for module located at [position] 
-    FloatVec getGains(uint8_t position); // returns [kp, ki, kd] as float vector
-    float getEffort(uint8_t position) { return modules_.at(position).getEffort(); } // returns computed effort of PID controller (prior to maxAmps saturation check)
-	
-    void setCountDesired(uint8_t position, int32_t countDesired) { modules_.at(position).setCountDesired(countDesired); } // set desired count of motor located at [position]
-    int32_t  getCountDesired(uint8_t position) { return modules_.at(position).getCountDesired(); } // returns the current target of motor located at [position]
-    Int32Vec getCountsDesired(void); // returns vector of last commanded count targets
-    Int32Vec getCountsLast(void); // returns most recent encoder counts
-    int32_t  getCountLast(uint8_t moduleNum) { return modules_.at(moduleNum).getCountLast(); } // returns most recent motor position
-    int32_t  readCountCurrent(uint8_t moduleNum){ return modules_.at(moduleNum).readCount(); } // reads (via SPI) the current encoder count
-    bool     resetCount(uint8_t moduleNum);   // resets the encoder count to zero
-    bool     resetCounts(void); // resets all encoders to zero
-
-    void stepPid(void); // PID controller performs one step (reads encoders, computes effort, updates DACs)
-    void restartPid(uint8_t position) { modules_.at(position).restartPid(); } // resets PID controller, but keeps gains
-    void restartPid(void); // reset all PID controllers
 
     void setLEDG(uint8_t position, bool state); // sets green LED
 	void setLEDG(bool state); // sets all green LEDs
@@ -105,7 +84,8 @@ public:
     void toggleLEDG(void) { setLEDG(!LEDG_.at(0)); } // toggles all green LEDs together (syncs based on state of LEDG_[0])
 
     void setDACs(Int16Vec const &val); // manually set DAC outputs
-	
+    float getEffort(uint8_t position) { return modules_.at(position).getEffort(); } // returns computed effort of PID controller (prior to maxAmps saturation check)
+
 	Uint32Vec readButtons(void);	 // check capacitive sensor buttons for key presses
 	bool isDownPressed(void) { return pins.buttonStates[0]; };
 	bool isUpPressed(void) { return pins.buttonStates[1]; }
@@ -122,8 +102,6 @@ private:
 	AD5761R DAC_; // provides access to all DACs
 	Int16Vec DACval_; // stores the current DAC output commands
 	
-    Si5351 si5351_; // clock generator for encoder ICs (LS7366R)
-
     ErrorCode errorCode_ = ErrorCode::NO_ERROR;
     volatile bool ampEnableFlag_ = true; // this flag is set by ampEnabledISR whenever ampEnabled_ state changes
     std::vector<LimitSwitch> triggeredLimitSwitches_; // vector of any currently triggered limit switches/e-stop; reset with resetTriggeredLimitSwitches()
@@ -133,9 +111,6 @@ private:
     bool    eStopState_ = false; // current state of E-stop/hardware brake (true = triggered/activated)
 
     BoolVec LEDG_ = { LOW, LOW, LOW, LOW, LOW, LOW }; // Green LED status (true = on)
-
-    //int8_t  whichDevice(void);  // returns the index (0-5) of the motor that caused the interrupt; E-stop/hardware brake = 6
-    //Int8Vec whichDevices(void); // use if there are multiple pins interrupted; i.e. when whichLimitSwitch() = -1
 };
 
 #endif

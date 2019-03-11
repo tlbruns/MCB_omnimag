@@ -26,19 +26,6 @@ int MCB::init(bool ignoreErrors /* = false */)
 		isPinsInit = true;
 	}
 	
-    // Determine initial states of limit switches and e-stop
-    initLimitSwitchStates(); // sets errorCode_
-
-    if (errorCode_ != MCB::ErrorCode::NO_ERROR && !ignoreErrors) {
-        return -1;
-    }
-
-
-	// initialize encoder clock used by all LS7366R 
-	si5351_.init(SI5351_CRYSTAL_LOAD_8PF, 0);
-	si5351_.set_freq(50000000ULL, 0ULL, SI5351_CLK0); // [hundreths of Hz] Set CLK0 to output 500 kHz
-	si5351_.output_enable(SI5351_CLK1, 0); // Disable other clocks
-	si5351_.output_enable(SI5351_CLK2, 0);
 	
 	// initialize SPI
 	SPI.begin();
@@ -65,26 +52,6 @@ int MCB::init(bool ignoreErrors /* = false */)
 	
 	// initialize 
     initDACs();
-	//DAC_.beginTransfer();
-	//for (uint8_t bb = 0; bb < numModules_; bb++)
-	//{
-	//	DAC_.reset(); // software reset
-	//}
-	//DAC_.endTransfer();
-	//
-	//DAC_.beginTransfer();
-	//for (uint8_t bb = 0; bb < numModules_; bb++)
-	//{
-	//	DAC_.init(); // setup ctrl register
-	//}
-	//DAC_.endTransfer();
-
-	//DAC_.beginTransfer();
-	//for (uint8_t bb = 0; bb < numModules_; bb++)
-	//{
-	//	DAC_.set(0); // Set output to 0 volts
-	//}
-	//DAC_.endTransfer();
 
     return numModules_;
 }
@@ -188,19 +155,6 @@ void MCB::addModule(uint8_t position)
 	moduleConfigured_.at(position) = modules_.at(position).init(); // initialize modules
 }
 
-void MCB::setPolarity(uint8_t position, bool polarity)
-{
-    modules_.at(position).setMotorPolarity(polarity);
-}
-
-void MCB::setPolarity(bool polarity)
-{
-    for (uint8_t aa = 0; aa < pins.maxNumBoards; aa++)
-    {
-        setPolarity(aa, polarity);
-    }
-}
-
 bool MCB::isAmpEnabled(uint8_t position)
 {
     // first check if update is needed
@@ -234,11 +188,6 @@ bool MCB::enableAmp(uint8_t position)
         // check that amp is not already enabled and that e-stop is disabled
         if (!isAmpEnabled(position) && !eStopState_)
         {
-            // prevent sudden movement once powered
-            restartPid(position); // restart the PID controller
-            readCountCurrent(position); // step PID to update encoder position
-            setCountDesired(position, getCountLast(position)); // set desired count to current
-
             // amp is enabled when ampCtrl == limitSwitchState
             digitalWriteFast(pins.ampCtrl[position], limitSwitchState_.at(position));
             ampEnabled_[position] = true; // update amp state
@@ -278,9 +227,6 @@ bool MCB::disableAmp(uint8_t position)
         // check that amp is not already disabled
         if (isAmpEnabled(position))
         {
-            // prevent sudden movement once powered
-            setCountDesired(position, readCountCurrent(position)); // sync current/desired position
-            restartPid(position); // restart the PID controller
             DACval_.at(position) = modules_.at(position).effortToDacCommand(0.0); // set DAC to command 0 amps
 
             // amp is disabled when ampCtrl != limitSwitchState
@@ -622,38 +568,6 @@ uint8_t MCB::limitSwitchToPosition(LimitSwitch limitSwitch)
     return position;
 }
 
-FloatVec MCB::getGains(uint8_t position)
-{
-    FloatVec gains;
-    gains.push_back(modules_.at(position).getKp());
-    gains.push_back(modules_.at(position).getKi());
-    gains.push_back(modules_.at(position).getKd());
-
-    return gains;
-}
-
-void MCB::stepPid(void)
-{
-	// step PID controllers
-	for (uint8_t aa = 0; aa < modules_.size(); aa++)
-	{
-        // only step controller if amp is enabled to prevent integral windup
-        if (isAmpEnabled(aa)) {
-            DACval_.at(aa) = modules_.at(aa).step();
-        }
-	}
-	
-	// update DACs
-	setDACs(DACval_);
-}
-
-void MCB::restartPid(void)
-{
-    for (auto& module : modules_) {
-        module.restartPid();
-    }
-}
-
 void MCB::setDACs(Int16Vec const &val)
 {
 
@@ -681,71 +595,6 @@ void MCB::setLEDG(bool state)
 		LEDG_.at(ii) = state;
 		digitalWriteFast(pins.led[ii], LEDG_.at(ii));
 	}
-}
-
-//void MCB::toggleLEDG(uint8_t position)
-//{
-//	// if on -> set off, else turn on
-//    if (LEDG_.at(position)) {
-//		setLEDG(position, LOW);
-//	}
-//	else {
-//		setLEDG(position, HIGH);
-//	}
-//}
-
-//void MCB::toggleLEDG(void)
-//{
-//    // toggle all together, synced to LEDG_[0]
-//    setLEDG(!LEDG_.at(0));
-//}
-
-Int32Vec MCB::getCountsDesired(void)
-{
-    Int32Vec countsDesired(pins.maxNumBoards);
-    for (int ii = 0; ii < numModules_; ii++) {
-        countsDesired.at(ii) = modules_.at(ii).getCountDesired();
-    }
-    return countsDesired;
-}
-
-Int32Vec MCB::getCountsLast(void)
-{
-	Int32Vec countsLast(pins.maxNumBoards);
-	for (uint8_t aa = 0; aa < modules_.size(); aa++)
-	{
-        countsLast.at(aa) = modules_.at(aa).getCountLast();
-	}
-	
-	return countsLast;
-}
-
-bool MCB::resetCount(uint8_t moduleNum)
-{
-    bool success = false;
-
-    // verify module number exists
-    if (moduleNum < numModules_) {
-        // ensure module is disabled before zeroing encoder count
-        disableAmp(moduleNum);
-        success = modules_[moduleNum].resetCount();
-    }
-   
-    return success;
-}
-
-bool MCB::resetCounts(void)
-{
-    bool success = true;
-
-    for (int ii = 0; ii < numModules_; ii++) {
-        // unsuccessful if any fail
-        if (!resetCount(ii)) {
-            success = false; 
-        }
-    }
-
-    return success;
 }
 
 Uint32Vec MCB::readButtons(void)

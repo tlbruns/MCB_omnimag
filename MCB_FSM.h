@@ -26,13 +26,11 @@ Changelog-
 #include <std_msgs/Bool.h>
 #include <std_msgs/Empty.h>
 #include <std_msgs/UInt8.h>
+#include <geometry_msgs/Vector3.h>
 #include <medlab_motor_control_board/EnableMotor.h>
-#include <medlab_motor_control_board/McbEncoderCurrent.h>
-#include <medlab_motor_control_board/McbEncoders.h>
-#include <medlab_motor_control_board/McbGains.h>
 #include <medlab_motor_control_board/McbStatus.h>
 
-#define MCB_VERSION 1.42
+#define MCB_VERSION 0.01
 
 // Motor Control Board
 //void motorSelectLedCallback(void); // ISR for toggling LED of selected motor during manual control state
@@ -60,15 +58,12 @@ MCBstate stepStateMachine(MCBstate stateNext);
 void subEnableRosControlCallback(const std_msgs::Bool& msg); // enters or exits RosControl state
 void subEnableMotorCallback(const medlab_motor_control_board::EnableMotor& msg); // enables or disables a single motor
 void subEnableAllMotorsCallback(const std_msgs::Bool& msg); // enables or disables all motors
-void subEncoderCommandCallback(const medlab_motor_control_board::McbEncoders& msg); // callback for subscriber subEncoderCommand
-void subEncoderZeroSingleCallback(const std_msgs::UInt8& msg); // resets a specific encoder (0-5) to zero
-void subEncoderZeroAllCallback(const std_msgs::Empty& msg); // resets all encoders to zero
+void subEffortCommandCallback(const geometry_msgs::Vector3& msg); // callback for subscriber subEncoderCommand
 void subResetDacsCallback(const std_msgs::Empty& msg); // re-initializes DACs
 void subGetStatusCallback(const std_msgs::Empty& msg);
-void subSetGainsCallback(const medlab_motor_control_board::McbGains& msg);
 
 // Manual Control
 //void timerManualControlCallback(void);
-void runManualControl(void);
+//void runManualControl(void);
 
 #endif // !MCB_FSM_H

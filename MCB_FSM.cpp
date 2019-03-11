@@ -7,13 +7,11 @@
 #include <Ethernet.h>
 #include "WiznetHardware.h"
 #include <medlab_motor_control_board/EnableMotor.h>
-#include <medlab_motor_control_board/McbEncoderCurrent.h>
-#include <medlab_motor_control_board/McbEncoders.h>
-#include <medlab_motor_control_board/McbGains.h>
 #include <medlab_motor_control_board/McbStatus.h>
 #include <std_msgs/Bool.h>
 #include <std_msgs/Empty.h>
 #include <std_msgs/UInt8.h>
+#include <geometry_msgs/Vector3.h>
 #include <EEPROM.h>
 
 /****************** GLOBALS *********************/
@@ -29,7 +27,7 @@ volatile modeSwitchState modeState;
 bool ROSenable = false; // ROS must set this true via 'enable_ros_control' topic to control motors
 
 // Manual Control
-IntervalTimer timerManualControl; // Button read timer interrupt
+//IntervalTimer timerManualControl; // Button read timer interrupt
 volatile bool timerManualControlFlag = false; // indicates timerManualControl has been called
 float frequencyManualControl = 500.0; // [Hz]
 uint32_t timeStepManualControl = static_cast<uint32_t>(1000000.0 / frequencyManualControl); // [us]
@@ -38,7 +36,7 @@ uint32_t countStepManualControl = 50; // [counts] step size for each up/down but
 // ROS
 ros::NodeHandle_<WiznetHardware> nh;
 String rosNameEncoderCurrent;
-String rosNameEncoderCommand;
+String rosNameEffortCommand;
 String rosNameLimitSwitchEvent;
 String rosNameStatus;
 String rosNameGetStatus;
@@ -50,18 +48,13 @@ String rosNameEnableAllMotors;
 String rosNameSetGains;
 String rosNameEnableRosControl;
     
-medlab_motor_control_board::McbEncoderCurrent msgEncoderCurrent; // stores most recent encoder counts to be sent via publisher
 medlab_motor_control_board::McbStatus msgStatus; // stores MCB status message
 medlab_motor_control_board::EnableMotor msgLimitSwitchEvent; // stores message that is sent whenever a limit switch is triggered
-ros::Publisher pubEncoderCurrent("tmp", &msgEncoderCurrent); // publishes current motor positions
 ros::Publisher pubStatus("tmp", &msgStatus); // publishes MCB status
 ros::Publisher pubLimitSwitchEvent("tmp", &msgLimitSwitchEvent); // publishes each time a limit switch is triggered
 ros::Subscriber<medlab_motor_control_board::EnableMotor> subEnableMotor("tmp", &subEnableMotorCallback); // enables or disables power to a specific motor
 ros::Subscriber<std_msgs::Bool>                          subEnableAllMotors("tmp", &subEnableAllMotorsCallback); // enables or disables all motors
-ros::Subscriber<medlab_motor_control_board::McbGains>    subSetGains("tmp", &subSetGainsCallback); // sets gains for a specific motor
-ros::Subscriber<medlab_motor_control_board::McbEncoders> subEncoderCommand("tmp", &subEncoderCommandCallback); // receives motor commands
-ros::Subscriber<std_msgs::UInt8>                         subEncoderZeroSingle("tmp", &subEncoderZeroSingleCallback); // resets a single encoder to zero
-ros::Subscriber<std_msgs::Empty>                         subEncoderZeroAll("tmp", &subEncoderZeroAllCallback); // resets all encoders to zero
+ros::Subscriber<geometry_msgs::Vector3>                  subEffortCommand("tmp", &subEffortCommandCallback); // receives motor commands
 ros::Subscriber<std_msgs::Empty>                         subResetDacs("tmp", &subResetDacsCallback); // re-initializes DACs
 ros::Subscriber<std_msgs::Bool>                          subEnableRosControl("tmp", &subEnableRosControlCallback); // used to move between RosIdle and RosControl states
 ros::Subscriber<std_msgs::Empty>                         subGetStatus("tmp", &subGetStatusCallback); // tells MCB to publish pubStatus
@@ -70,19 +63,6 @@ IntervalTimer timerRos; // ROS timer interrupt
 volatile bool timerRosFlag = false; // indicates timerRos has been called
 float frequencyRos = 500.0; // [Hz]
 uint32_t timeStepRos = uint32_t(1000000.0 / frequencyRos); // [us]
-uint8_t publishInterval = 4; // publish every x times timerRos is called
-
-// PID Controller
-IntervalTimer timerPid; // PID controller timer interrupt
-volatile bool timerPidFlag = false; // indicates timerPid has been called
-//int32_t countDesired[6]; // does this need to be volatile?
-float frequencyPid = 1000.0; // [Hz]
-uint32_t timeStepPid = uint32_t(1000000.0 / frequencyPid); // [us]
-//float kp = 0.0004, ki = 0.000002, kd = 0.01; // work ok for 1 kHz, EC13 brushless motor (gearhead only/no drivetrain connected!)
-float kp = 0.008, ki = 0.00002, kd = 0.17; // work ok for 1 kHz, EC13 brushless motor (endonasal module; translation; no tubes)
-//float kp = 0.0010, ki = 0.000003, kd = 0.035; // work ok for 1 kHz, RE25 brushed motor
-// float kp = 0.0002, ki = 0.000001, kd = 0.01; // work ok for 2 kHz
-
 
 MCBstate stepStateMachine(MCBstate stateNext) 
 {
@@ -242,31 +222,23 @@ MCBstate RosInit(void)
 
     // create topic names
     String rosNamespace = rosConfig.getNamespace();
-    rosNameEncoderCurrent    = rosNamespace + "/encoder_current";
-    rosNameEncoderCommand    = rosNamespace + "/encoder_command";
+    rosNameEffortCommand     = rosNamespace + "/dac_voltages";
     rosNameLimitSwitchEvent  = rosNamespace + "/limit_switch_event";
     rosNameStatus            = rosNamespace + "/status";
     rosNameGetStatus         = rosNamespace + "/get_status";
-    rosNameEncoderZeroSingle = rosNamespace + "/encoder_zero_single";
-    rosNameEncoderZeroAll    = rosNamespace + "/encoder_zero_all";
     rosNameResetDacs         = rosNamespace + "/reset_dacs";
-    rosNameEnableMotor       = rosNamespace + "/enable_motor";
-    rosNameEnableAllMotors   = rosNamespace + "/enable_all_motors";
-    rosNameSetGains          = rosNamespace + "/set_gains";
+    rosNameEnableMotor       = rosNamespace + "/enable_amp";
+    rosNameEnableAllMotors   = rosNamespace + "/enable_all_amps";
     rosNameEnableRosControl  = rosNamespace + "/enable_ros_control";
 
     // setup topics
-    pubEncoderCurrent     = ros::Publisher(rosNameEncoderCurrent.c_str(), &msgEncoderCurrent);
-    subEncoderCommand     = ros::Subscriber<medlab_motor_control_board::McbEncoders>(rosNameEncoderCommand.c_str(), &subEncoderCommandCallback);
+    subEffortCommand      = ros::Subscriber<geometry_msgs::Vector3>(rosNameEffortCommand.c_str(), &subEffortCommandCallback);
     pubLimitSwitchEvent   = ros::Publisher(rosNameLimitSwitchEvent.c_str(), &msgLimitSwitchEvent);
     pubStatus             = ros::Publisher(rosNameStatus.c_str(), &msgStatus);
     subGetStatus          = ros::Subscriber<std_msgs::Empty>(rosNameGetStatus.c_str(), &subGetStatusCallback);
-    subEncoderZeroAll     = ros::Subscriber<std_msgs::Empty>(rosNameEncoderZeroAll.c_str(), &subEncoderZeroAllCallback);
-    subEncoderZeroSingle  = ros::Subscriber<std_msgs::UInt8>(rosNameEncoderZeroSingle.c_str(), &subEncoderZeroSingleCallback);
     subResetDacs          = ros::Subscriber<std_msgs::Empty>(rosNameResetDacs.c_str(), &subResetDacsCallback);
     subEnableMotor        = ros::Subscriber<medlab_motor_control_board::EnableMotor>(rosNameEnableMotor.c_str(), &subEnableMotorCallback);
     subEnableAllMotors    = ros::Subscriber<std_msgs::Bool>(rosNameEnableAllMotors.c_str(), &subEnableAllMotorsCallback);
-    subSetGains           = ros::Subscriber<medlab_motor_control_board::McbGains>(rosNameSetGains.c_str(), &subSetGainsCallback);
     subEnableRosControl   = ros::Subscriber<std_msgs::Bool>(rosNameEnableRosControl.c_str(), &subEnableRosControlCallback);
 
 	// set up Wiznet and connect to ROS server
@@ -289,16 +261,12 @@ MCBstate RosInit(void)
 
 	// initialize ROS
 	Serial.print("Connecting to ROS Network ... ");
-	nh.advertise(pubEncoderCurrent);
     nh.advertise(pubStatus);
     nh.advertise(pubLimitSwitchEvent);
-	nh.subscribe(subEncoderCommand);
-    nh.subscribe(subEncoderZeroSingle);
-    nh.subscribe(subEncoderZeroAll);
+	nh.subscribe(subEffortCommand);
     nh.subscribe(subResetDacs);
     nh.subscribe(subEnableMotor);
     nh.subscribe(subEnableAllMotors);
-    nh.subscribe(subSetGains);
     nh.subscribe(subEnableRosControl);
     nh.subscribe(subGetStatus);
 	
@@ -315,15 +283,6 @@ MCBstate RosInit(void)
 	}
 
 	Serial.println("Success!");
-	
-	// initialize motors
-	Serial.print("Initializing Motors ... ");
-	for (int ii = 0; ii < MotorBoard.numModules(); ii++) {
-		MotorBoard.setGains(ii, kp, ki, kd);
-        MotorBoard.setCountDesired(ii, MotorBoard.readCountCurrent(ii));
-        MotorBoard.setPolarity(ii, 1);
-	}
-	Serial.println("done");
 
 	switch (modeState) {
 	case Manual:
@@ -353,37 +312,15 @@ MCBstate RosIdle(void)
 
     // start ROS update timer
     timerRos.begin([]() {timerRosFlag = true; }, timeStepRos);
-    //timerRos.begin(timerRosCallback, timeStepRos);
-    uint32_t rosLoopCount = 0;
 
 	// wait for ROS enable command via service call
 	while (!ROSenable && nh.connected() && (modeState == Ros)) {
         noInterrupts(); // prevent interrupts during SPI communication
 
-        if (timerRosFlag) {
-            if (rosLoopCount % publishInterval == 0) {
-                // assemble encoder message to send out
-                for (int ii = 0; ii < MotorBoard.numModules(); ii++) {
-                    if (MotorBoard.isAmpEnabled(ii)) {
-                        // stepPid() updates/reads count only if amp is enabled
-                        msgEncoderCurrent.measured[ii] = MotorBoard.getCountLast(ii);
-                    }
-                    else {
-                        // must manually read current count when disabled
-                        msgEncoderCurrent.measured[ii] = MotorBoard.readCountCurrent(ii);
-                    }
-                    msgEncoderCurrent.desired[ii] = MotorBoard.getCountDesired(ii);
-                }
-                // queue messages into their publishers
-                pubEncoderCurrent.publish(&msgEncoderCurrent);
-            }
-            rosLoopCount++;
+        // process pending ROS communications
+        nh.spinOnce();
 
-            // process pending ROS communications
-            nh.spinOnce();
-
-            timerRosFlag = false;
-        }
+        timerRosFlag = false;
 
         interrupts();
 	}
@@ -427,14 +364,15 @@ MCBstate RosControl(void)
         return stateRosIdle;
     }
 
-	// set desired motor position to current position (prevents unexpected movement)
+	// reset DACs to ensure currents are set to zero
 	for (int ii = 0; ii < MotorBoard.numModules(); ii++) {
-		MotorBoard.setCountDesired(ii, MotorBoard.readCountCurrent(ii));
+		MotorBoard.initDACs();
 	}
-
-	// start PID timer
-    timerPid.begin([]() {timerPidFlag = true; }, timeStepPid);
-	//timerPid.begin(timerPidCallback, timeStepPid);
+    geometry_msgs::Vector3 msg_temp;
+    msg_temp.x = 0.0f;
+    msg_temp.y = 0.0f;
+    msg_temp.z = 0.0f;
+    subEffortCommandCallback(msg_temp);
 
 	// start ROS update timer
     timerRos.begin([]() {timerRosFlag = true; }, timeStepRos);
@@ -443,14 +381,11 @@ MCBstate RosControl(void)
     MotorBoard.setGlobalInhibit(false);
     MotorBoard.updateAmpStates();
 
-    //noInterrupts();
-
-    uint32_t rosLoopCount = 0;
 
 	// loop until disconnected OR ROS 'disable' command OR mode switched to 'Manual'
 	while (ROSenable && nh.connected() && (modeState == Ros)) 
     { 
-    // NOTE: this while loop must be able to run at least twice as fast as fastest InterruptTimer (usually timerPid)
+    // NOTE: this while loop must be able to run at least twice as fast as fastest InterruptTimer
 
         // process any triggered limit switches
         if (MotorBoard.ampEnableFlag())
@@ -493,44 +428,16 @@ MCBstate RosControl(void)
 
         noInterrupts(); // prevent interrupts during functions using SPI      
 
-        if (timerPidFlag) {
-            // read encoders, compute PID effort, update DACs
-            MotorBoard.stepPid();
-            
-            timerPidFlag = false;
-        }
+        // process pending ROS communications
+        nh.spinOnce();
 
-        if (timerRosFlag) {
-            if (rosLoopCount % publishInterval == 0) {
-                // assemble encoder message to send out
-                for (int ii = 0; ii < MotorBoard.numModules(); ii++) {
-                    if (MotorBoard.isAmpEnabled(ii)) {
-                        // stepPid() updates/reads count only if amp is enabled
-                        msgEncoderCurrent.measured[ii] = MotorBoard.getCountLast(ii);
-                    }
-                    else {
-                        // must manually read current count when disabled
-                        msgEncoderCurrent.measured[ii] = MotorBoard.readCountCurrent(ii);
-                    }
-                    msgEncoderCurrent.desired[ii] = MotorBoard.getCountDesired(ii);
-                }
-                // queue messages into their publishers
-                pubEncoderCurrent.publish(&msgEncoderCurrent);
-            }
-            rosLoopCount++;
-
-            // process pending ROS communications
-            nh.spinOnce();
-
-            timerRosFlag = false;
-        }
+        timerRosFlag = false;
 
         interrupts(); // process any interrupts here
 	}
 
 	// power off motors, disable PID controller, and stop ROS timer
 	MotorBoard.disableAllAmps();
-	timerPid.end();
 	timerRos.end();
 	ROSenable = false;
     interrupts(); // now safe to re-enable since timer interrupts are stopped
@@ -560,7 +467,6 @@ MCBstate ManualIdle(void)
     // ensure amps are off and controller is not running
     MotorBoard.disableAllAmps();
     MotorBoard.setGlobalInhibit(true);
-    timerPid.end();
 
     uint32_t holdTime = 2000; // [ms] how long buttons must be held before function returns
     uint32_t timeButtonsPressed = 0; // [ms] how long buttons have been held
@@ -634,13 +540,6 @@ MCBstate ManualIdle(void)
         }
     }
 
-    // initialize motors
-    Serial.print("Initializing Motors ... ");
-    for (int ii = 0; ii < MotorBoard.numModules(); ii++) {
-        MotorBoard.setGains(ii, kp, ki, kd);
-    }
-    Serial.println("done");
-
     // advance based on mode switch position
     switch (modeState) {
     case Manual:
@@ -662,114 +561,100 @@ MCBstate ManualControl(void)
     Serial.println("Entering Manual Control State");
     Serial.println("*****************************\n");
 
-    // set desired motor position to current position (prevents unexpected movement)
-    for (int ii = 0; ii < MotorBoard.numModules(); ii++) {
-        MotorBoard.setCountDesired(ii, MotorBoard.readCountCurrent(ii));
-    }
+    //// set desired motor position to current position (prevents unexpected movement)
+    //for (int ii = 0; ii < MotorBoard.numModules(); ii++) {
+    //    MotorBoard.setCountDesired(ii, MotorBoard.readCountCurrent(ii));
+    //}
 
-    // start PID controllers
-    timerPid.begin([]() {timerPidFlag = true; }, timeStepPid);
-    //timerPid.begin(timerPidCallback, timeStepPid);
+    //// start manual control timer
+    //timerManualControl.begin([]() {timerManualControlFlag = true; }, timeStepManualControl);
 
-    // start manual control timer
-    timerManualControl.begin([]() {timerManualControlFlag = true; }, timeStepManualControl);
-    //timerManualControl.begin(timerManualControlCallback, timeStepManualControl);
+    //// flash led of currently selected motor
+    ////timerMotorSelectLed.begin(motorSelectLedCallback, 350000);
+    //timerMotorSelectLed.begin([]() {MotorBoard.toggleLEDG(currentMotorSelected); }, 350000);
 
-    // flash led of currently selected motor
-    //timerMotorSelectLed.begin(motorSelectLedCallback, 350000);
-    timerMotorSelectLed.begin([]() {MotorBoard.toggleLEDG(currentMotorSelected); }, 350000);
+    //// ensure that e-stop is not engaged
+    //if (MotorBoard.initLimitSwitchStates() == MCB::ErrorCode::ESTOP_TRIGGERED) {
+    //    Serial.println("\nE-Stop engaged! Must disengage before entering control state.");
+    //    Serial.println("\nReturning to idle state...");
+    //    return stateManualIdle;
+    //}
 
-    // ensure that e-stop is not engaged
-    if (MotorBoard.initLimitSwitchStates() == MCB::ErrorCode::ESTOP_TRIGGERED) {
-        Serial.println("\nE-Stop engaged! Must disengage before entering control state.");
-        Serial.println("\nReturning to idle state...");
-        return stateManualIdle;
-    }
+    //// disable globalInhibit for amps
+    //MotorBoard.setGlobalInhibit(false);
+    //MotorBoard.updateAmpStates();
 
-    // disable globalInhibit for amps
-    MotorBoard.setGlobalInhibit(false);
-    MotorBoard.updateAmpStates();
+    //// power on first motor
+    //MotorBoard.enableAmp(currentMotorSelected);
 
-    // power on first motor
-    MotorBoard.enableAmp(currentMotorSelected);
-
-    MotorBoard.setLEDG(LOW);
+    //MotorBoard.setLEDG(LOW);
 
     // keep running until mode switch changed to Ros OR serial command detected
     while (modeState == Manual) // NOTE: this while loop must be able to run at least twice as fast as the fastest InterruptTimer (usually timerPid)
     {  
-        // process any triggered limit switches
-        if (MotorBoard.ampEnableFlag()) 
-        {
-            // update current states of limit switches and ampEnable pins, and determine what was triggered
-            if (MotorBoard.updateAmpStates()) 
-            {
-                for (uint8_t ii = 0; ii < MotorBoard.triggeredLimitSwitches().size(); ii++) 
-                {
-                    if (MotorBoard.triggeredLimitSwitches().at(ii) == MCB::LimitSwitch::ESTOP) 
-                    {   // e-stop was triggered
-                        
-                        Serial.println("\nE-Stop Engaged! \nExiting Manual Control State");
+        //// process any triggered limit switches
+        //if (MotorBoard.ampEnableFlag()) 
+        //{
+        //    // update current states of limit switches and ampEnable pins, and determine what was triggered
+        //    if (MotorBoard.updateAmpStates()) 
+        //    {
+        //        for (uint8_t ii = 0; ii < MotorBoard.triggeredLimitSwitches().size(); ii++) 
+        //        {
+        //            if (MotorBoard.triggeredLimitSwitches().at(ii) == MCB::LimitSwitch::ESTOP) 
+        //            {   // e-stop was triggered
+        //                
+        //                Serial.println("\nE-Stop Engaged! \nExiting Manual Control State");
 
-                        // stop timers and disable amps
-                        timerManualControl.end();
-                        timerMotorSelectLed.end();
-                        timerPid.end();
-                        MotorBoard.disableAllAmps();
+        //                // stop timers and disable amps
+        //                timerManualControl.end();
+        //                timerMotorSelectLed.end();
+        //                MotorBoard.disableAllAmps();
 
-                        // leave control state
-                        return stateManualIdle; 
-                    }
-                    else 
-                    {   // limit switch was triggered
-                        uint8_t modulePosition = MotorBoard.limitSwitchToPosition(MotorBoard.triggeredLimitSwitches().at(ii)); // convert MCB::LimitSwitch to uint8_t
-                        if (modulePosition <= MotorBoard.numModules()) {
-                            Serial.print("limit switch ");
-                            Serial.print(modulePosition);
-                            Serial.print(" triggered (switch is currently ");
-                            if (MotorBoard.limitSwitchState(modulePosition)) {
-                                Serial.println("closed)");
-                            }
-                            else {
-                                Serial.println("open)");
-                            }
+        //                // leave control state
+        //                return stateManualIdle; 
+        //            }
+        //            else 
+        //            {   // limit switch was triggered
+        //                uint8_t modulePosition = MotorBoard.limitSwitchToPosition(MotorBoard.triggeredLimitSwitches().at(ii)); // convert MCB::LimitSwitch to uint8_t
+        //                if (modulePosition <= MotorBoard.numModules()) {
+        //                    Serial.print("limit switch ");
+        //                    Serial.print(modulePosition);
+        //                    Serial.print(" triggered (switch is currently ");
+        //                    if (MotorBoard.limitSwitchState(modulePosition)) {
+        //                        Serial.println("closed)");
+        //                    }
+        //                    else {
+        //                        Serial.println("open)");
+        //                    }
 
-                            // disable this motor
-                            MotorBoard.disableAmp(modulePosition);
-                        }
-                    }
-                }
+        //                    // disable this motor
+        //                    MotorBoard.disableAmp(modulePosition);
+        //                }
+        //            }
+        //        }
 
-                // reset now that we have processed
-                MotorBoard.resetTriggeredLimitSwitches();
-            }
-        }
-        
-        noInterrupts(); // prevents interruption during critical functions
+        //        // reset now that we have processed
+        //        MotorBoard.resetTriggeredLimitSwitches();
+        //    }
+        //}
+        //
+        //noInterrupts(); // prevents interruption during critical functions
 
-        if (timerPidFlag) {
-            // read encoders, compute PID effort, update DACs
-            MotorBoard.stepPid();
+        //// run manual control on a timer so a held button produces a constant velocity
+        //if (timerManualControlFlag) {
+        //    runManualControl();
+        //    timerManualControlFlag = false;
+        //}
 
-            timerPidFlag = false;
-        }
-
-        // run manual control on a timer so a held button produces a constant velocity
-        if (timerManualControlFlag) {
-            runManualControl();
-            timerManualControlFlag = false;
-        }
-
-        interrupts(); // now safe to process any interrupts
+        //interrupts(); // now safe to process any interrupts
     }
 
     // stop checking buttons
-    timerManualControl.end();
+    //timerManualControl.end();
     timerMotorSelectLed.end();
 
     // power off motors and disable PID controller
     MotorBoard.disableAllAmps();
-    timerPid.end();
 
     // turn off green LEDs
     MotorBoard.setLEDG(LOW);
@@ -899,34 +784,50 @@ void subEnableAllMotorsCallback(const std_msgs::Bool & msg)
     }
 }
 
-void subEncoderCommandCallback(const medlab_motor_control_board::McbEncoders& msg)
+void subEffortCommandCallback(const geometry_msgs::Vector3& msg)
 {
-	// set desired motor positions with values received over ROS
-	for (int ii = 0; ii < MotorBoard.numModules(); ii++) {
-		MotorBoard.setCountDesired(ii, msg.count[ii]);
-	}
-}
+    // lambda function to convert desired DAC voltages to DAC commands
+    auto voltageToDacCommand = [](float effort) -> uint16_t {
+        float effortTemp = effort;
+        float dacRange_[2] = { -10.0, 10.0 };
 
-void subEncoderZeroSingleCallback(const std_msgs::UInt8 & msg)
-{
-    // ensure request is valid
-    if (msg.data <= MotorBoard.numModules()) {
-        // disable amp and reset the encoder count to zero for the desired motor
-        MotorBoard.resetCount(msg.data);
+        // check for saturation
+        if (effort > dacRange_[1]) {
+            effortTemp = dacRange_[1];
+        }
+        else if (effort < dacRange_[0]) {
+            effortTemp = dacRange_[0];
+        }
+
+        // encode effort to 16-bit DAC code
+        // DAC code = (2^16)*(effort - Vmin)/(Vmax - Vmin)
+        return static_cast<uint16_t>(65535.0f * (effortTemp - dacRange_[0]) / (dacRange_[1] - dacRange_[0]));
+    };
+
+    // MUST be in ROS Control state
+    if (stateCurrent != stateRosControl) {
+        return;
     }
-}
 
-void subEncoderZeroAllCallback(const std_msgs::Empty & msg)
-{
-    // disables all amps and resets encoder counts to zero
-    MotorBoard.resetCounts();
+    // check that three modules have been configured
+    if (MotorBoard.numModules() != 3) {
+        return;
+    }
+
+	// create vector of DAC commands
+    Int16Vec dac_cmds;
+    dac_cmds.push_back(static_cast<int16_t>(voltageToDacCommand(msg.x)));
+    dac_cmds.push_back(static_cast<int16_t>(voltageToDacCommand(msg.y)));
+    dac_cmds.push_back(static_cast<int16_t>(voltageToDacCommand(msg.z)));
+
+    // set DACs
+    MotorBoard.setDACs(dac_cmds);
 }
 
 void subResetDacsCallback(const std_msgs::Empty & msg)
 {
     MotorBoard.disableAllAmps(); // briefly disable motors to prevent sudden movements
     MotorBoard.initDACs();
-    //MotorBoard.enableAllAmps();
 }
 
 void subGetStatusCallback(const std_msgs::Empty & msg)
@@ -938,82 +839,64 @@ void subGetStatusCallback(const std_msgs::Empty & msg)
     memcpy(msgStatus.ip, &tmpIP, 4);
     memcpy(msgStatus.mac, nh.getHardware()->wiznet_mac, 6);
     for (int ii = 0; ii < 6; ii++) {
-        msgStatus.count_commanded[ii] = MotorBoard.getCountDesired(ii);
-        msgStatus.count_current[ii] = MotorBoard.getCountLast(ii);
+        msgStatus.count_commanded[ii] = 0;
+        msgStatus.count_current[ii] = 0;
         msgStatus.control_effort[ii] = MotorBoard.getEffort(ii);
         msgStatus.motor_enabled[ii] = MotorBoard.isAmpEnabled(ii);
         msgStatus.limit_switch[ii] = MotorBoard.limitSwitchState(ii);
-        FloatVec gains = MotorBoard.getGains(ii);
-        msgStatus.p[ii] = gains.at(0);
-        msgStatus.i[ii] = gains.at(1);
-        msgStatus.d[ii] = gains.at(2);
+        msgStatus.p[ii] = 0;
+        msgStatus.i[ii] = 0;
+        msgStatus.d[ii] = 0;
     }
     
     // publish status
     pubStatus.publish(&msgStatus);
 }
 
-void subSetGainsCallback(const medlab_motor_control_board::McbGains & msg)
-{
-    // ensure a module exists at location requested
-    if (MotorBoard.isModuleConfigured(msg.motor)) {
-        MotorBoard.setGains(msg.motor, msg.p, msg.i, msg.d);
-    }
-}
 
-//void motorSelectLedCallback(void)
+//void runManualControl(void)
 //{
-//    MotorBoard.toggleLEDG(currentMotorSelected);
+//    // check buttons
+//	MotorBoard.readButtons();
+//
+//	if (MotorBoard.isMenuPressed()) {
+//		MotorBoard.disableAllAmps(); // stop motors during user selection
+//		for (int ii = 0; ii < MotorBoard.numModules(); ii++) {
+//			MotorBoard.setLEDG(ii, false);
+//		}
+//		MotorBoard.setLEDG(currentMotorSelected, true);
+//
+//		while (MotorBoard.isMenuPressed()) {
+//			if (MotorBoard.isUpPressed()) {
+//				MotorBoard.setLEDG(currentMotorSelected, false);
+//				currentMotorSelected++;
+//				if (currentMotorSelected > (MotorBoard.numModules()-1)) {
+//					currentMotorSelected = 0; }
+//				MotorBoard.setLEDG(currentMotorSelected, true);
+//			}
+//			else if (MotorBoard.isDownPressed()) {
+//				MotorBoard.setLEDG(currentMotorSelected, false);
+//				currentMotorSelected--;
+//				if (currentMotorSelected < 0) { 
+//					currentMotorSelected = (MotorBoard.numModules()-1); }
+//				MotorBoard.setLEDG(currentMotorSelected, true);
+//			}
+//
+//            MotorBoard.setCountDesired(currentMotorSelected, MotorBoard.getCountLast(currentMotorSelected)); // ensure we drive relative to current position
+//
+//			delayMicroseconds(400000); // wait for human's slow reaction time
+//			MotorBoard.readButtons();
+//		}
+//		MotorBoard.setGlobalInhibit(false); // ensure globalInhibit is false
+//    MotorBoard.enableAmp(currentMotorSelected);
+//	}
+//	else if (MotorBoard.isUpPressed()) {
+//        MotorBoard.setCountDesired(currentMotorSelected, MotorBoard.getCountDesired(currentMotorSelected) + countStepManualControl);
+//    }
+//	else if (MotorBoard.isDownPressed()) {
+//        MotorBoard.setCountDesired(currentMotorSelected, MotorBoard.getCountDesired(currentMotorSelected) - countStepManualControl);
+//	}
 //}
-
-//void timerManualControlCallback(void)
-//{
-//    timerManualControlFlag = true;
-//}
-
-void runManualControl(void)
-{
-    // check buttons
-	MotorBoard.readButtons();
-
-	if (MotorBoard.isMenuPressed()) {
-		MotorBoard.disableAllAmps(); // stop motors during user selection
-		for (int ii = 0; ii < MotorBoard.numModules(); ii++) {
-			MotorBoard.setLEDG(ii, false);
-		}
-		MotorBoard.setLEDG(currentMotorSelected, true);
-
-		while (MotorBoard.isMenuPressed()) {
-			if (MotorBoard.isUpPressed()) {
-				MotorBoard.setLEDG(currentMotorSelected, false);
-				currentMotorSelected++;
-				if (currentMotorSelected > (MotorBoard.numModules()-1)) {
-					currentMotorSelected = 0; }
-				MotorBoard.setLEDG(currentMotorSelected, true);
-			}
-			else if (MotorBoard.isDownPressed()) {
-				MotorBoard.setLEDG(currentMotorSelected, false);
-				currentMotorSelected--;
-				if (currentMotorSelected < 0) { 
-					currentMotorSelected = (MotorBoard.numModules()-1); }
-				MotorBoard.setLEDG(currentMotorSelected, true);
-			}
-
-            MotorBoard.setCountDesired(currentMotorSelected, MotorBoard.getCountLast(currentMotorSelected)); // ensure we drive relative to current position
-
-			delayMicroseconds(400000); // wait for human's slow reaction time
-			MotorBoard.readButtons();
-		}
-		MotorBoard.setGlobalInhibit(false); // ensure globalInhibit is false
-    MotorBoard.enableAmp(currentMotorSelected);
-	}
-	else if (MotorBoard.isUpPressed()) {
-        MotorBoard.setCountDesired(currentMotorSelected, MotorBoard.getCountDesired(currentMotorSelected) + countStepManualControl);
-    }
-	else if (MotorBoard.isDownPressed()) {
-        MotorBoard.setCountDesired(currentMotorSelected, MotorBoard.getCountDesired(currentMotorSelected) - countStepManualControl);
-	}
-}
 
 const char* MCBstateToString(MCBstate currentState) {
     const char* stateName;
