@@ -61,7 +61,7 @@ ros::Subscriber<std_msgs::Empty>                         subGetStatus("tmp", &su
 
 IntervalTimer timerRos; // ROS timer interrupt
 volatile bool timerRosFlag = false; // indicates timerRos has been called
-float frequencyRos = 500.0; // [Hz]
+float frequencyRos = 2000.0; // [Hz]
 uint32_t timeStepRos = uint32_t(1000000.0 / frequencyRos); // [us]
 
 MCBstate stepStateMachine(MCBstate stateNext) 
@@ -311,7 +311,7 @@ MCBstate RosIdle(void)
     MotorBoard.updateAmpStates();
 
     // start ROS update timer
-    timerRos.begin([]() {timerRosFlag = true; }, timeStepRos);
+    timerRos.begin(timerRosCallback, timeStepRos);
 
 	// wait for ROS enable command via service call
 	while (!ROSenable && nh.connected() && (modeState == Ros)) {
@@ -375,7 +375,7 @@ MCBstate RosControl(void)
     subEffortCommandCallback(msg_temp);
 
 	// start ROS update timer
-    timerRos.begin([]() {timerRosFlag = true; }, timeStepRos);
+    timerRos.begin(timerRosCallback, timeStepRos);
 
     // disable globalInhibit
     MotorBoard.setGlobalInhibit(false);
@@ -429,9 +429,12 @@ MCBstate RosControl(void)
         noInterrupts(); // prevent interrupts during functions using SPI      
 
         // process pending ROS communications
-        nh.spinOnce();
-
-        timerRosFlag = false;
+        if (timerRosFlag) {
+            MotorBoard.setLEDG(3, HIGH);
+            nh.spinOnce();
+            timerRosFlag = false;
+            MotorBoard.setLEDG(3, LOW);
+        }
 
         interrupts(); // process any interrupts here
 	}
@@ -718,6 +721,10 @@ void blinkErrorCode(MCB::ErrorCode errorCode)
         timerMotorSelectLed.end(); // stop blinking
         break;
     }
+}
+
+void timerRosCallback(void) {
+    timerRosFlag = true;
 }
 
 

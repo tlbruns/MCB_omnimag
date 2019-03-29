@@ -38,6 +38,7 @@ void modeSwitchCallback(void); // ISR for mode switch on motherboard
 void ampEnableISR(void); // ISR for MCP23008 interrupt that is triggered whenever an ampEnabled pin changes
 void printErrorCode(MCB::ErrorCode errorCode); // reads MCB::getErrorCode() and prints message 
 void blinkErrorCode(MCB::ErrorCode errorCode); // blinks green LEDs to signal error codes (1 Hz = WRONG_MODULE_ORDER; 2 Hz = ESTOP_TRIGGERED; 4 Hz = LIMIT_SWITCH_TRIGGERED_ON_STARTUP)
+void timerRosCallback(void);
 
 // Finite State Machine
 enum MCBstate { statePowerUp, stateManualIdle, stateManualControl, stateRosInit, stateRosIdle, stateRosControl };
